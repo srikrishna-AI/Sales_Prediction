@@ -127,9 +127,10 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Screenshots  
 
-![App Preview](https://via.placeholder.com/800x400.png?text=App+Preview)  
+![image](https://github.com/user-attachments/assets/8ad9dbed-533d-4124-bd57-d90be0919309)
+ 
 
-*(Replace the placeholder link with an actual screenshot of your app.)*  
+ 
 
 ---
 
