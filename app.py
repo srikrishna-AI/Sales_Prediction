@@ -1,131 +1,195 @@
-import os
 import streamlit as st
-import cv2
-import face_recognition
+import pandas as pd
 import numpy as np
-from PIL import Image
-import pickle
+import plotly.graph_objects as go
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
 
-# Known face encodings and names
-known_face_encodings = []
-known_face_names = []
+# Streamlit app setup
+st.title("Stock Market Prediction App using LSTM")
 
-# Function to save known faces
-def save_known_faces():
-    with open('known_faces.pkl', 'wb') as f:
-        pickle.dump((known_face_encodings, known_face_names), f)
+# File upload
+uploaded_file = st.file_uploader("Upload your stock market dataset (CSV)", type=["csv"])
 
-# Function to load known faces
-def load_known_faces():
-    global known_face_encodings, known_face_names
-    try:
-        with open('known_faces.pkl', 'rb') as f:
-            known_face_encodings, known_face_names = pickle.load(f)
-    except FileNotFoundError:
-        st.warning("No known faces found, please add some.")
+if uploaded_file is not None:
+    # Read the dataset
+    df = pd.read_csv(uploaded_file)
+    st.write("Dataset Preview:")
+    st.write(df.head())
 
-# Helper function to add new face
-def add_new_face(image, name):
-    image = np.array(image)
-    encoding = face_recognition.face_encodings(image)
-    if encoding:
-        known_face_encodings.append(encoding[0])
-        known_face_names.append(name)
-    else:
-        st.error("No face found in the image!")
+    # Select column with closing price
+    column_name = st.selectbox("Select the column with closing prices:", df.columns)
 
-# Load known faces at startup
-load_known_faces()
+    # Preprocess the data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    data = df[[column_name]].values
+    scaled_data = scaler.fit_transform(data)
 
-# Title and description
-st.title("Face Recognition App")
-st.write("Upload a photo to add to known faces or start live recognition via webcam.")
+    # Split the data into training and testing
+    training_size = int(len(scaled_data) * 0.8)
+    train_data = scaled_data[0:training_size, :]
+    test_data = scaled_data[training_size:, :]
 
-# Sidebar for adding new faces
-st.sidebar.header("Add New Face")
-uploaded_file = st.sidebar.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-name = st.sidebar.text_input("Enter the person's name")
 
-if st.sidebar.button("Add Face", key="add_face_button") and uploaded_file and name:
-    # Convert the uploaded file to an image
-    image = Image.open(uploaded_file)
-    st.sidebar.image(image, caption=f"Uploaded image of {name}", use_column_width=True)
-    add_new_face(image, name)
-    save_known_faces()  # Save known faces after adding a new one
-    st.sidebar.success(f"{name} has been added!")
+    # Prepare input for the model
+    def create_dataset(dataset, time_step=100):
+        X, y = [], []
+        for i in range(len(dataset) - time_step - 1):
+            X.append(dataset[i:(i + time_step), 0])
+            y.append(dataset[i + time_step, 0])
+        return np.array(X), np.array(y)
 
-# State to manage webcam session
-if 'webcam_active' not in st.session_state:
-    st.session_state.webcam_active = False
 
-if 'camera' not in st.session_state:
-    st.session_state.camera = None
+    # Dynamically adjust the time_step based on the dataset size
+    min_time_step = 10  # Minimum time steps allowed
+    max_time_step = 100  # Default time step
 
-# Start webcam button
-if st.button("Start Webcam for Face Recognition", key="start_webcam_button"):
-    st.session_state.webcam_active = True
-    st.session_state.camera = cv2.VideoCapture(0)
+    # Calculate the max possible time_step based on the dataset size
+    max_possible_time_step = len(train_data) // 10  # Arbitrary logic: dataset length / 10
 
-# Stop webcam button
-if st.button("Stop Webcam", key="stop_webcam_button"):
-    st.session_state.webcam_active = False
-    if st.session_state.camera is not None:
-        st.session_state.camera.release()
-        st.session_state.camera = None  # Clear camera reference
-    st.empty()  # Clear the displayed frame
+    # Use the smaller value between the max possible time step and the default
+    time_step = min(max_time_step, max(min_time_step, max_possible_time_step))
 
-# Webcam live face recognition
-if st.session_state.webcam_active and st.session_state.camera is not None:
-    stframe = st.empty()
-    camera = st.session_state.camera
+    st.write(f"Using time_step: {time_step}")
 
-    while st.session_state.webcam_active:
-        success, frame = camera.read()
-        if not success:
-            st.error("Failed to access webcam. Please check your camera settings.")
-            break
+    if len(train_data) > time_step:
+        # Create training and testing datasets
+        X_train, y_train = create_dataset(train_data, time_step)
+        X_test, y_test = create_dataset(test_data, time_step)
 
-        # Resize frame for faster processing
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        # Ensure the data has enough samples to reshape
+        if X_train.shape[0] > 0 and X_test.shape[0] > 0:
+            # Reshape input data to be compatible with LSTM
+            X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+            X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-        # Find face locations and encodings
-        face_locations = face_recognition.face_locations(rgb_small_frame)
-        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+            # Define the LSTM model
+            model = Sequential()
+            model.add(LSTM(50, return_sequences=True, input_shape=(time_step, 1)))
+            model.add(LSTM(50, return_sequences=False))
+            model.add(Dense(25))
+            model.add(Dense(1))
 
-        face_names = []
-        for face_encoding in face_encodings:
-            if known_face_encodings:
-                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            # Compile the model
+            model.compile(optimizer='adam', loss='mean_squared_error')
 
-                if face_distances.size > 0:
-                    best_match_index = np.argmin(face_distances)
-                    name = known_face_names[best_match_index] if matches[best_match_index] else "Unknown"
-                else:
-                    name = "Unknown"
+            # Train the model
+            model.fit(X_train, y_train, batch_size=64, epochs=5)
+
+            # Make predictions
+            train_predict = model.predict(X_train)
+            test_predict = model.predict(X_test)
+
+            # Reverse scaling
+            train_predict = scaler.inverse_transform(train_predict)
+            test_predict = scaler.inverse_transform(test_predict)
+
+            # Prepare data for plotting
+            full_data = np.concatenate((train_data, test_data), axis=0)
+            full_data_inverse = scaler.inverse_transform(full_data)
+
+            # Plot using Plotly (interactive with hover)
+            st.subheader("Closing Price vs Time (Training set)")
+
+            # Create a range for x-axis (time)
+            time_range = np.arange(len(full_data_inverse))
+
+            # Flatten the predictions to 1D
+            train_predict_flat = train_predict.flatten()
+            test_predict_flat = test_predict.flatten()
+
+            # Padding with NaNs to align with the original data length
+            train_predict_padded = np.concatenate(
+                [train_predict_flat, [np.nan] * (len(full_data_inverse) - len(train_predict_flat))])
+            test_predict_padded = np.concatenate([[np.nan] * training_size, test_predict_flat, [np.nan] * (
+                        len(full_data_inverse) - len(test_predict_flat) - training_size)])
+
+            # Plot using Plotly
+            fig = go.Figure()
+
+            # Add actual data
+            fig.add_trace(go.Scatter(x=time_range, y=full_data_inverse.flatten(),
+                                     mode='lines', name="Actual"))
+
+            # Add train predictions
+            fig.add_trace(go.Scatter(x=time_range, y=train_predict_padded,
+                                     mode='lines', name="Train Predictions"))
+
+            # Add test predictions
+            fig.add_trace(go.Scatter(x=time_range, y=test_predict_padded,
+                                     mode='lines', name="Test Predictions"))
+
+            # Update layout
+            fig.update_layout(title="Stock Price Predictions",
+                              xaxis_title="Time",
+                              yaxis_title="Price")
+
+            # Display the plot in Streamlit
+            st.plotly_chart(fig)
+
+            # Predict future prices
+            num_days = st.number_input("Enter number of future days to predict", min_value=1, max_value=100, value=30)
+
+            # Last 100 days data to start prediction
+            temp_input = test_data[-time_step:].tolist()
+
+            if len(temp_input) < time_step:
+                st.error("Not enough data to make predictions. Please try with a larger dataset.")
             else:
-                name = "No known faces available."
+                # Flatten temp_input to avoid nested lists
+                temp_input = [item for sublist in temp_input for item in sublist]
 
-            face_names.append(name)
+                # Predict future prices
+                future_output = []
+                for i in range(num_days):
+                    if len(temp_input) > time_step:
+                        x_input = np.array(temp_input[1:])
+                        x_input = x_input.reshape(1, -1)
+                        x_input = x_input.reshape((1, time_step, 1))
+                        pred = model.predict(x_input, verbose=0)
+                        temp_input.extend(pred[0].tolist())
+                        temp_input = temp_input[1:]
+                    else:
+                        x_input = np.array(temp_input).reshape((1, time_step, 1))
+                        pred = model.predict(x_input, verbose=0)
+                        temp_input.extend(pred[0].tolist())
 
-        # Draw rectangles around faces and display names
-        for (top, right, bottom, left), name in zip(face_locations, face_names):
-            top *= 4
-            right *= 4
-            bottom *= 4
-            left *= 4
+                    future_output.extend(pred.tolist())
 
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
-            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
-            font = cv2.FONT_HERSHEY_DUPLEX
-            cv2.putText(frame, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
+                future_output = scaler.inverse_transform(future_output)
 
-        # Convert the frame to an image for Streamlit
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        stframe.image(frame_rgb, channels="RGB")
+                # Convert predictions to DataFrame
+                future_days = np.arange(1, num_days + 1)
+                predictions_df = pd.DataFrame(future_output, columns=["Predicted Price"])
+                predictions_df["Day"] = future_days
 
-    # Ensure camera is released when stopping
-    if st.session_state.camera is not None:
-        st.session_state.camera.release()
-        st.session_state.camera = None
+                # Plot future predictions using Plotly
+                st.subheader(f"Prediction for the next {num_days} days")
+
+                fig2 = go.Figure()
+
+                # Add future predictions
+                fig2.add_trace(go.Scatter(x=future_days, y=future_output.flatten(),
+                                          mode='lines', name="Future Predictions"))
+
+                # Update layout
+                fig2.update_layout(title=f"Stock Price Prediction for Next {num_days} Days",
+                                   xaxis_title="Days",
+                                   yaxis_title="Predicted Price")
+
+                # Display the plot in Streamlit
+                st.plotly_chart(fig2)
+
+                # Option to download predictions as CSV
+                csv = predictions_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download predictions as CSV",
+                    data=csv,
+                    file_name='stock_predictions.csv',
+                    mime='text/csv',
+                )
+        else:
+            st.error("Not enough data to reshape. Please try with a larger dataset.")
+else:
+    st.write("Please upload a dataset to begin.")
